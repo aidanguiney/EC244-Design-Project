@@ -15,11 +15,13 @@
 #define PHASE_CCW_TURNS 3
 #define PHASE_CCW_CONTINUOUS 4
 #define PHASE_POT_CONTROL 5
+#define PHASE_MOTOR_OFF 6    // New phase for motor shutdown
 
 // Timing constants
 #define CONTINUOUS_ROTATION_DURATION_MS 6000  // 6 seconds
 #define PAUSE_DURATION_MS 2000  // 2 second pause
 #define TURN_PAUSE_MS 1000  // 1 second pause between turns
+#define INACTIVITY_TIMEOUT_MS 20000  // 20 seconds of no movement triggers shutdown
 
 // Speed parameters - lower values = faster rotation
 #define FIXED_ROTATION_DELAY 150  // Delay for fixed rotations
@@ -34,7 +36,9 @@
 int currentPhase = PHASE_DEMO_SEQUENCE;
 unsigned long phaseStartTime = 0;
 unsigned long lastStepTime = 0;
+unsigned long lastMovementTime = 0;  // Time when the motor last moved
 bool phaseInitialized = false;
+bool motorActive = false;  // Track if motor is currently active
 
 // Serial debug
 const bool DEBUG = true;
@@ -59,6 +63,9 @@ void setup() {
   
   // Initialize state machine
   transitionToPhase(PHASE_DEMO_SEQUENCE);
+  
+  // Initialize movement tracking
+  lastMovementTime = millis();
 }
 
 // Function to transition to a new phase
@@ -71,6 +78,31 @@ void transitionToPhase(int newPhase) {
     Serial.print("Transitioning to phase: ");
     Serial.println(newPhase);
   }
+  
+  // Handle special transitions
+  if (newPhase == PHASE_MOTOR_OFF) {
+    disableMotor();
+  } else {
+    enableMotor();
+  }
+}
+
+// Enable the motor driver
+void enableMotor() {
+  if (DEBUG && !motorActive) {
+    Serial.println("Enabling motor");
+  }
+  digitalWrite(ENABLE_PIN, LOW);  // LOW = enabled for TMC2208
+  motorActive = true;
+}
+
+// Disable the motor driver
+void disableMotor() {
+  if (DEBUG && motorActive) {
+    Serial.println("Disabling motor - Kill switch activated");
+  }
+  digitalWrite(ENABLE_PIN, HIGH);  // HIGH = disabled for TMC2208
+  motorActive = false;
 }
 
 // Set direction of motor rotation
@@ -84,6 +116,9 @@ void stepOnce(int speedDelay) {
   delayMicroseconds(speedDelay);
   digitalWrite(STEP_PIN, LOW);
   delayMicroseconds(speedDelay);
+  
+  // Record this movement
+  lastMovementTime = millis();
 }
 
 // Function to step the motor a specific number of steps
@@ -190,6 +225,18 @@ void handleContinuousCCW() {
 
 // Handle potentiometer control phase
 void handlePotControl() {
+  // First, check for inactivity timeout
+  unsigned long currentTime = millis();
+  if (currentTime - lastMovementTime >= INACTIVITY_TIMEOUT_MS) {
+    if (DEBUG) {
+      Serial.print("No movement for ");
+      Serial.print(INACTIVITY_TIMEOUT_MS / 1000);
+      Serial.println(" seconds - activating kill switch");
+    }
+    transitionToPhase(PHASE_MOTOR_OFF);
+    return;
+  }
+
   int potValue = analogRead(POT_PIN);
   
   // Map potentiometer value to motor speed
@@ -207,6 +254,22 @@ void handlePotControl() {
   
   // Step the motor with the calculated speed
   stepOnce(speedDelay);
+}
+
+// Handle motor off state
+void handleMotorOff() {
+  // Motor is already disabled, but we can add a way to wake it back up if needed
+  // For example, check if potentiometer moved significantly from center
+  
+  int potValue = analogRead(POT_PIN);
+  
+  // If potentiometer is far from center, wake up the motor
+  if (potValue < 412 || potValue > 612) {  // More than 100 away from center (512)
+    if (DEBUG) {
+      Serial.println("Potentiometer moved significantly - reactivating motor");
+    }
+    transitionToPhase(PHASE_POT_CONTROL);
+  }
 }
 
 void loop() {
@@ -234,6 +297,10 @@ void loop() {
       
     case PHASE_POT_CONTROL:
       handlePotControl();
+      break;
+      
+    case PHASE_MOTOR_OFF:
+      handleMotorOff();
       break;
   }
 }
