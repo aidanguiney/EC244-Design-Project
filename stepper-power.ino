@@ -8,27 +8,36 @@
 #define STEPS_PER_REV 1600  // Total steps for one revolution (including microstepping)
 #define DEAD_ZONE 30        // Threshold to stop motor when pot is near center
 
-// Timing variables
-unsigned long previousMillis = 0;
-const long interval = 6000;  // 6 seconds delay (6,000 milliseconds)
-int rotationPhase = 0;       // To track the current phase of the motor operation
-bool initialSetupDone = false;
-bool pauseCompleted = false; // Flag to track if pause before CCW turns is completed
+// Define rotation phases as constants
+#define PHASE_DEMO_SEQUENCE 0
+#define PHASE_CW_CONTINUOUS 1
+#define PHASE_PAUSE_BEFORE_CCW 2
+#define PHASE_CCW_TURNS 3
+#define PHASE_CCW_CONTINUOUS 4
+#define PHASE_POT_CONTROL 5
+
+// Timing constants
+#define CONTINUOUS_ROTATION_DURATION_MS 6000  // 6 seconds
+#define PAUSE_DURATION_MS 2000  // 2 second pause
+#define TURN_PAUSE_MS 1000  // 1 second pause between turns
 
 // Speed parameters - lower values = faster rotation
 #define FIXED_ROTATION_DELAY 150  // Delay for fixed rotations
 #define CONTINUOUS_ROTATION_DELAY 250  // Delay for continuous rotation
 
-// Pause duration before starting CCW turns (in milliseconds)
-#define PAUSE_DURATION 2000  // 2 second pause
-
-// Serial debug
-const bool DEBUG = true;
-
 // DIRECTION CORRECTION: Reversing the direction logic
 // Set to LOW for clockwise and HIGH for counter-clockwise (reversed from previous code)
 #define CLOCKWISE LOW
 #define COUNTERCLOCKWISE HIGH
+
+// State machine variables
+int currentPhase = PHASE_DEMO_SEQUENCE;
+unsigned long phaseStartTime = 0;
+unsigned long lastStepTime = 0;
+bool phaseInitialized = false;
+
+// Serial debug
+const bool DEBUG = true;
 
 void setup() {
   // Initialize pins
@@ -48,147 +57,183 @@ void setup() {
   // Short delay to ensure everything is ready
   delay(1000);
   
-  // Enter the first phase - we'll start with a quarter, half, full turn CW
-  rotationPhase = 0;
-  previousMillis = millis();
+  // Initialize state machine
+  transitionToPhase(PHASE_DEMO_SEQUENCE);
+}
+
+// Function to transition to a new phase
+void transitionToPhase(int newPhase) {
+  currentPhase = newPhase;
+  phaseStartTime = millis();
+  phaseInitialized = false;
+  
+  if (DEBUG) {
+    Serial.print("Transitioning to phase: ");
+    Serial.println(newPhase);
+  }
+}
+
+// Set direction of motor rotation
+void setDirection(bool direction) {
+  digitalWrite(DIR_PIN, direction);
+}
+
+// Step the motor once with given delay
+void stepOnce(int speedDelay) {
+  digitalWrite(STEP_PIN, HIGH);
+  delayMicroseconds(speedDelay);
+  digitalWrite(STEP_PIN, LOW);
+  delayMicroseconds(speedDelay);
 }
 
 // Function to step the motor a specific number of steps
 void stepMotor(int steps, int speedDelay) {
   for (int i = 0; i < steps; i++) {
-    digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(speedDelay);
-    digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(speedDelay);
+    stepOnce(speedDelay);
   }
 }
 
-// Performs the initial demonstration sequence
-void performDemoSequence() {
-  if (!initialSetupDone) {
-    if (DEBUG) Serial.println("Starting initial demo sequence");
-    initialSetupDone = true;
-    
-    // First do quarter, half, full clockwise rotation
-    if (DEBUG) Serial.println("Clockwise quarter turn");
-    digitalWrite(DIR_PIN, CLOCKWISE); // Set direction clockwise
-    stepMotor(STEPS_PER_REV / 4, FIXED_ROTATION_DELAY); // Quarter turn
-    delay(1000);
-    
-    if (DEBUG) Serial.println("Clockwise half turn");
-    stepMotor(STEPS_PER_REV / 2, FIXED_ROTATION_DELAY); // Half turn
-    delay(1000);
-    
-    if (DEBUG) Serial.println("Clockwise full turn");
-    stepMotor(STEPS_PER_REV, FIXED_ROTATION_DELAY); // Full turn
-    delay(1000);
-    
-    // Enter continuous clockwise rotation phase
-    if (DEBUG) Serial.println("Starting continuous clockwise rotation for 6s");
-    rotationPhase = 1;
-    previousMillis = millis();
+// Perform specific turn (quarter, half, full)
+void performTurn(bool direction, float turnFraction, String turnDescription) {
+  if (DEBUG) {
+    Serial.print(direction == CLOCKWISE ? "Clockwise " : "Counter-clockwise ");
+    Serial.println(turnDescription);
   }
-}
-
-void loop() {
-  unsigned long currentMillis = millis();
   
-  // Run the initial demo sequence if not already done
-  if (!initialSetupDone) {
-    performDemoSequence();
+  setDirection(direction);
+  stepMotor(STEPS_PER_REV * turnFraction, FIXED_ROTATION_DELAY);
+}
+
+// Handle the initial demo sequence phase
+void handleDemoSequence() {
+  if (!phaseInitialized) {
+    if (DEBUG) Serial.println("Starting initial demo sequence");
+    phaseInitialized = true;
+    
+    // Quarter turn clockwise
+    performTurn(CLOCKWISE, 0.25, "quarter turn");
+    delay(TURN_PAUSE_MS);
+    
+    // Half turn clockwise
+    performTurn(CLOCKWISE, 0.5, "half turn");
+    delay(TURN_PAUSE_MS);
+    
+    // Full turn clockwise
+    performTurn(CLOCKWISE, 1.0, "full turn");
+    delay(TURN_PAUSE_MS);
+    
+    // Move to continuous clockwise rotation
+    transitionToPhase(PHASE_CW_CONTINUOUS);
+  }
+}
+
+// Handle continuous clockwise rotation phase
+void handleContinuousClockwise() {
+  unsigned long currentTime = millis();
+  
+  // Check if it's time to transition to next phase
+  if (currentTime - phaseStartTime >= CONTINUOUS_ROTATION_DURATION_MS) {
+    transitionToPhase(PHASE_PAUSE_BEFORE_CCW);
     return;
   }
   
-  // Execute phases based on the current rotation phase
-  switch (rotationPhase) {
-    case 1:
-      // Continuous clockwise rotation for 6 seconds
-      if (currentMillis - previousMillis < interval) {
-        digitalWrite(DIR_PIN, CLOCKWISE); // Clockwise
-        digitalWrite(STEP_PIN, HIGH);
-        delayMicroseconds(CONTINUOUS_ROTATION_DELAY);
-        digitalWrite(STEP_PIN, LOW);
-        delayMicroseconds(CONTINUOUS_ROTATION_DELAY);
-      } else {
-        // After 6 seconds, add pause before CCW turns
-        if (DEBUG) Serial.println("Pausing before counter-clockwise turns");
-        previousMillis = currentMillis;
-        rotationPhase = 2;  // Move to pause phase
-        pauseCompleted = false;  // Reset pause flag
-      }
+  // Perform continuous rotation
+  setDirection(CLOCKWISE);
+  stepOnce(CONTINUOUS_ROTATION_DELAY);
+}
+
+// Handle pause before counter-clockwise turns
+void handlePauseBeforeCCW() {
+  if (millis() - phaseStartTime >= PAUSE_DURATION_MS) {
+    transitionToPhase(PHASE_CCW_TURNS);
+  }
+}
+
+// Handle counter-clockwise turns phase
+void handleCCWTurns() {
+  if (!phaseInitialized) {
+    phaseInitialized = true;
+    
+    if (DEBUG) Serial.println("Starting counter-clockwise turns");
+    
+    // Quarter turn counter-clockwise
+    performTurn(COUNTERCLOCKWISE, 0.25, "quarter turn");
+    delay(TURN_PAUSE_MS);
+    
+    // Half turn counter-clockwise
+    performTurn(COUNTERCLOCKWISE, 0.5, "half turn");
+    delay(TURN_PAUSE_MS);
+    
+    // Full turn counter-clockwise
+    performTurn(COUNTERCLOCKWISE, 1.0, "full turn");
+    delay(TURN_PAUSE_MS);
+    
+    // Move to continuous counter-clockwise rotation
+    transitionToPhase(PHASE_CCW_CONTINUOUS);
+  }
+}
+
+// Handle continuous counter-clockwise rotation phase
+void handleContinuousCCW() {
+  unsigned long currentTime = millis();
+  
+  // Check if it's time to transition to next phase
+  if (currentTime - phaseStartTime >= CONTINUOUS_ROTATION_DURATION_MS) {
+    transitionToPhase(PHASE_POT_CONTROL);
+    return;
+  }
+  
+  // Perform continuous rotation
+  setDirection(COUNTERCLOCKWISE);
+  stepOnce(CONTINUOUS_ROTATION_DELAY);
+}
+
+// Handle potentiometer control phase
+void handlePotControl() {
+  int potValue = analogRead(POT_PIN);
+  
+  // Map potentiometer value to motor speed
+  // Lower delay value = faster speed (increased speed range)
+  int speedDelay = map(abs(potValue - 512), 0, 512, 1500, 100);
+  
+  // Check if potentiometer is in the dead zone (near center)
+  if (potValue > 512 - DEAD_ZONE && potValue < 512 + DEAD_ZONE) {
+    // If in dead zone, don't step the motor
+    return;
+  }
+  
+  // Set direction based on potentiometer position
+  setDirection(potValue < 512 ? CLOCKWISE : COUNTERCLOCKWISE);
+  
+  // Step the motor with the calculated speed
+  stepOnce(speedDelay);
+}
+
+void loop() {
+  // State machine implementation
+  switch (currentPhase) {
+    case PHASE_DEMO_SEQUENCE:
+      handleDemoSequence();
       break;
       
-    case 2:
-      // Pause before starting counter-clockwise turns
-      if (currentMillis - previousMillis >= PAUSE_DURATION && !pauseCompleted) {
-        // After pause, start CCW quarter, half, full turns
-        if (DEBUG) Serial.println("Starting counter-clockwise turns");
-        pauseCompleted = true;  // Mark pause as completed
-        
-        // Quarter, half, full counter-clockwise rotation
-        digitalWrite(DIR_PIN, COUNTERCLOCKWISE); // Counter-clockwise
-        
-        if (DEBUG) Serial.println("Counter-clockwise quarter turn");
-        stepMotor(STEPS_PER_REV / 4, FIXED_ROTATION_DELAY); // Quarter turn
-        delay(1000);
-        
-        if (DEBUG) Serial.println("Counter-clockwise half turn");
-        stepMotor(STEPS_PER_REV / 2, FIXED_ROTATION_DELAY); // Half turn
-        delay(1000);
-        
-        if (DEBUG) Serial.println("Counter-clockwise full turn");
-        stepMotor(STEPS_PER_REV, FIXED_ROTATION_DELAY); // Full turn
-        delay(1000);
-        
-        // After CCW turns, move to continuous CCW rotation
-        if (DEBUG) Serial.println("Starting continuous counter-clockwise rotation for 6s");
-        rotationPhase = 3;
-        previousMillis = millis();  // Reset timer for accurate CCW continuous timing
-      }
+    case PHASE_CW_CONTINUOUS:
+      handleContinuousClockwise();
       break;
       
-    case 3:
-      // Continuous counter-clockwise rotation for 6 seconds
-      if (currentMillis - previousMillis < interval) {
-        digitalWrite(DIR_PIN, COUNTERCLOCKWISE); // Counter-clockwise
-        digitalWrite(STEP_PIN, HIGH);
-        delayMicroseconds(CONTINUOUS_ROTATION_DELAY);
-        digitalWrite(STEP_PIN, LOW);
-        delayMicroseconds(CONTINUOUS_ROTATION_DELAY);
-      } else {
-        // After 6 seconds, move to potentiometer control mode
-        if (DEBUG) Serial.println("Starting potentiometer control mode");
-        rotationPhase = 4;
-      }
+    case PHASE_PAUSE_BEFORE_CCW:
+      handlePauseBeforeCCW();
       break;
       
-    case 4:
-      // Potentiometer-controlled speed and direction
-      int potValue = analogRead(POT_PIN);
+    case PHASE_CCW_TURNS:
+      handleCCWTurns();
+      break;
       
-      // Map potentiometer value to motor speed
-      // Lower delay value = faster speed (increased speed range)
-      int speedDelay = map(abs(potValue - 512), 0, 512, 1500, 100);
+    case PHASE_CCW_CONTINUOUS:
+      handleContinuousCCW();
+      break;
       
-      // Check if potentiometer is in the dead zone (near center)
-      if (potValue > 512 - DEAD_ZONE && potValue < 512 + DEAD_ZONE) {
-        // If in dead zone, don't step the motor
-        return;
-      }
-      
-      // Set direction based on potentiometer position
-      // Note: Direction logic is now reversed to match actual motor behavior
-      if (potValue < 512) {
-        digitalWrite(DIR_PIN, CLOCKWISE); // Clockwise
-      } else {
-        digitalWrite(DIR_PIN, COUNTERCLOCKWISE);  // Counter-clockwise
-      }
-      
-      // Step the motor with the calculated speed
-      digitalWrite(STEP_PIN, HIGH);
-      delayMicroseconds(speedDelay);
-      digitalWrite(STEP_PIN, LOW);
-      delayMicroseconds(speedDelay);
+    case PHASE_POT_CONTROL:
+      handlePotControl();
       break;
   }
 }
