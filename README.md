@@ -10,7 +10,7 @@ The basic functions will be performed:
 - Counter-clockwise rotation (continuous operation)
 - Be able to use a potentiometer to manually control the motor to rotate in both directions. The potentiometer should also      control the speed of the motor
 
-Equipment:
+Equipment
 -
 - Arduino Nano 33 BLE Sense Rev2
 - TMC2208 Breakout Board (BOB) Motor Controller IC
@@ -25,4 +25,8 @@ Procedure
 
 Results
 -
-All functions were performed well, 
+All functions were performed well. When doing the initial programming, the stepper motor would overheat because there was no kill switch that turned off current to the motors when not in use. So I added a kill switch after 20 seconds so that the motors wouldn't overheat from constant high current.
+
+Conclusion
+-
+The objective of the lab was met and a circuit was designed, built, and tested that highlighted the capability of a stepper motor. 
